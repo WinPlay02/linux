@@ -20,11 +20,9 @@
 
 struct malidp_drm {
 	struct malidp_hw_device *dev;
-	struct drm_fbdev_cma *fbdev;
 	struct drm_crtc crtc;
 	wait_queue_head_t wq;
 	atomic_t config_valid;
-	struct drm_atomic_state *pm_state;
 	u32 core_id;
 };
 
@@ -65,6 +63,6 @@ void malidp_de_planes_destroy(struct drm_device *drm);
 int malidp_crtc_init(struct drm_device *drm);
 
 /* often used combination of rotational bits */
-#define MALIDP_ROTATED_MASK	(DRM_ROTATE_90 | DRM_ROTATE_270)
+#define MALIDP_ROTATED_MASK	(DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_270)
 
 #endif  /* __MALIDP_DRV_H__ */

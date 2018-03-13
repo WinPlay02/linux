@@ -446,7 +446,7 @@ int vmw_user_dmabuf_alloc(struct vmw_private *dev_priv,
 	int ret;
 
 	user_bo = kzalloc(sizeof(*user_bo), GFP_KERNEL);
-	if (unlikely(user_bo == NULL)) {
+	if (unlikely(!user_bo)) {
 		DRM_ERROR("Failed to allocate a buffer.\n");
 		return -ENOMEM;
 	}
@@ -836,7 +836,7 @@ static int vmw_resource_buf_alloc(struct vmw_resource *res,
 	}
 
 	backup = kzalloc(sizeof(*backup), GFP_KERNEL);
-	if (unlikely(backup == NULL))
+	if (unlikely(!backup))
 		return -ENOMEM;
 
 	ret = vmw_dmabuf_init(res->dev_priv, backup, res->backup_size,
@@ -968,6 +968,7 @@ vmw_resource_check_buffer(struct vmw_resource *res,
 			  bool interruptible,
 			  struct ttm_validate_buffer *val_buf)
 {
+	struct ttm_operation_ctx ctx = { true, false };
 	struct list_head val_list;
 	bool backup_dirty = false;
 	int ret;
@@ -992,7 +993,7 @@ vmw_resource_check_buffer(struct vmw_resource *res,
 	backup_dirty = res->backup_dirty;
 	ret = ttm_bo_validate(&res->backup->base,
 			      res->func->backup_placement,
-			      true, false);
+			      &ctx);
 
 	if (unlikely(ret != 0))
 		goto out_no_validate;
@@ -1446,6 +1447,7 @@ void vmw_resource_evict_all(struct vmw_private *dev_priv)
  */
 int vmw_resource_pin(struct vmw_resource *res, bool interruptible)
 {
+	struct ttm_operation_ctx ctx = { interruptible, false };
 	struct vmw_private *dev_priv = res->dev_priv;
 	int ret;
 
@@ -1466,7 +1468,7 @@ int vmw_resource_pin(struct vmw_resource *res, bool interruptible)
 				ret = ttm_bo_validate
 					(&vbo->base,
 					 res->func->backup_placement,
-					 interruptible, false);
+					 &ctx);
 				if (ret) {
 					ttm_bo_unreserve(&vbo->base);
 					goto out_no_validate;

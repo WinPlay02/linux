@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -37,7 +38,7 @@
 
 #define DEBUG_SUBSYSTEM S_LLITE
 
-#include "../include/obd.h"
+#include <obd.h>
 
 #include "llite_internal.h"
 #include "vvp_internal.h"
@@ -325,7 +326,7 @@ static void vvp_io_fini(const struct lu_env *env, const struct cl_io_slice *ios)
 		io->ci_need_restart = vio->vui_layout_gen != gen;
 		if (io->ci_need_restart) {
 			CDEBUG(D_VFSTRACE,
-			       DFID" layout changed from %d to %d.\n",
+			       DFID " layout changed from %d to %d.\n",
 			       PFID(lu_object_fid(&obj->co_lu)),
 			       vio->vui_layout_gen, gen);
 			/* today successful restore is the only possible case */
@@ -698,7 +699,7 @@ static int vvp_io_read_start(const struct lu_env *env,
 	result = vvp_prep_size(env, obj, io, pos, tot, &exceed);
 	if (result != 0)
 		return result;
-	else if (exceed != 0)
+	if (exceed != 0)
 		goto out;
 
 	LU_OBJECT_HEADER(D_INODE, env, &obj->co_lu,

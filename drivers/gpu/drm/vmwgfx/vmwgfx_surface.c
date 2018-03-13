@@ -25,11 +25,12 @@
  *
  **************************************************************************/
 
+#include <drm/ttm/ttm_placement.h>
+
 #include "vmwgfx_drv.h"
 #include "vmwgfx_resource_priv.h"
 #include "vmwgfx_so.h"
 #include "vmwgfx_binding.h"
-#include <ttm/ttm_placement.h>
 #include "device_include/svga3d_surfacedefs.h"
 
 
@@ -699,6 +700,10 @@ int vmw_surface_define_ioctl(struct drm_device *dev, void *data,
 	struct drm_vmw_surface_create_req *req = &arg->req;
 	struct drm_vmw_surface_arg *rep = &arg->rep;
 	struct ttm_object_file *tfile = vmw_fpriv(file_priv)->tfile;
+	struct ttm_operation_ctx ctx = {
+		.interruptible = true,
+		.no_wait_gpu = false
+	};
 	int ret;
 	int i, j;
 	uint32_t cur_bo_offset;
@@ -740,7 +745,7 @@ int vmw_surface_define_ioctl(struct drm_device *dev, void *data,
 		return ret;
 
 	ret = ttm_mem_global_alloc(vmw_mem_glob(dev_priv),
-				   size, false, true);
+				   size, &ctx);
 	if (unlikely(ret != 0)) {
 		if (ret != -ERESTARTSYS)
 			DRM_ERROR("Out of graphics memory for surface"
@@ -903,7 +908,7 @@ vmw_surface_handle_reference(struct vmw_private *dev_priv,
 		if (unlikely(drm_is_render_client(file_priv)))
 			require_exist = true;
 
-		if (ACCESS_ONCE(vmw_fpriv(file_priv)->locked_master)) {
+		if (READ_ONCE(vmw_fpriv(file_priv)->locked_master)) {
 			DRM_ERROR("Locked master refused legacy "
 				  "surface reference.\n");
 			return -EACCES;
@@ -1274,9 +1279,12 @@ int vmw_gb_surface_define_ioctl(struct drm_device *dev, void *data,
 	struct ttm_object_file *tfile = vmw_fpriv(file_priv)->tfile;
 	int ret;
 	uint32_t size;
-	uint32_t backup_handle;
+	uint32_t backup_handle = 0;
 
 	if (req->multisample_count != 0)
+		return -EINVAL;
+
+	if (req->mip_levels > DRM_VMW_MAX_MIP_LEVELS)
 		return -EINVAL;
 
 	if (unlikely(vmw_user_surface_size == 0))
@@ -1314,12 +1322,16 @@ int vmw_gb_surface_define_ioctl(struct drm_device *dev, void *data,
 		ret = vmw_user_dmabuf_lookup(tfile, req->buffer_handle,
 					     &res->backup,
 					     &user_srf->backup_base);
-		if (ret == 0 && res->backup->base.num_pages * PAGE_SIZE <
-		    res->backup_size) {
-			DRM_ERROR("Surface backup buffer is too small.\n");
-			vmw_dmabuf_unreference(&res->backup);
-			ret = -EINVAL;
-			goto out_unlock;
+		if (ret == 0) {
+			if (res->backup->base.num_pages * PAGE_SIZE <
+			    res->backup_size) {
+				DRM_ERROR("Surface backup buffer is too small.\n");
+				vmw_dmabuf_unreference(&res->backup);
+				ret = -EINVAL;
+				goto out_unlock;
+			} else {
+				backup_handle = req->buffer_handle;
+			}
 		}
 	} else if (req->drm_surface_flags & drm_vmw_surface_flag_create_buffer)
 		ret = vmw_user_dmabuf_alloc(dev_priv, tfile,
@@ -1471,6 +1483,10 @@ int vmw_surface_gb_priv_define(struct drm_device *dev,
 {
 	struct vmw_private *dev_priv = vmw_priv(dev);
 	struct vmw_user_surface *user_srf;
+	struct ttm_operation_ctx ctx = {
+		.interruptible = true,
+		.no_wait_gpu = false
+	};
 	struct vmw_surface *srf;
 	int ret;
 	u32 num_layers;
@@ -1491,7 +1507,7 @@ int vmw_surface_gb_priv_define(struct drm_device *dev,
 				 dev_priv->stdu_max_height);
 
 		if (size.width > max_width || size.height > max_height) {
-			DRM_ERROR("%ux%u\n, exeeds max surface size %ux%u",
+			DRM_ERROR("%ux%u\n, exceeds max surface size %ux%u",
 				  size.width, size.height,
 				  max_width, max_height);
 			return -EINVAL;
@@ -1517,7 +1533,7 @@ int vmw_surface_gb_priv_define(struct drm_device *dev,
 		return ret;
 
 	ret = ttm_mem_global_alloc(vmw_mem_glob(dev_priv),
-				   user_accounting_size, false, true);
+				   user_accounting_size, &ctx);
 	if (unlikely(ret != 0)) {
 		if (ret != -ERESTARTSYS)
 			DRM_ERROR("Out of graphics memory for surface"

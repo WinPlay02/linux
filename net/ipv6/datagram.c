@@ -221,8 +221,7 @@ ipv4_connected:
 	if (__ipv6_addr_needs_scope_id(addr_type)) {
 		if (addr_len >= sizeof(struct sockaddr_in6) &&
 		    usin->sin6_scope_id) {
-			if (sk->sk_bound_dev_if &&
-			    sk->sk_bound_dev_if != usin->sin6_scope_id) {
+			if (!sk_dev_equal_l3scope(sk, usin->sin6_scope_id)) {
 				err = -EINVAL;
 				goto out;
 			}
@@ -250,8 +249,14 @@ ipv4_connected:
 	 */
 
 	err = ip6_datagram_dst_update(sk, true);
-	if (err)
+	if (err) {
+		/* Reset daddr and dport so that udp_v6_early_demux()
+		 * fails to find this socket
+		 */
+		memset(&sk->sk_v6_daddr, 0, sizeof(sk->sk_v6_daddr));
+		inet->inet_dport = 0;
 		goto out;
+	}
 
 	sk->sk_state = TCP_ESTABLISHED;
 	sk_set_txhash(sk);
@@ -1035,6 +1040,6 @@ void ip6_dgram_sock_seq_show(struct seq_file *seq, struct sock *sp,
 		   from_kuid_munged(seq_user_ns(seq), sock_i_uid(sp)),
 		   0,
 		   sock_i_ino(sp),
-		   atomic_read(&sp->sk_refcnt), sp,
+		   refcount_read(&sp->sk_refcnt), sp,
 		   atomic_read(&sp->sk_drops));
 }

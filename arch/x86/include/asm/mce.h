@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_MCE_H
 #define _ASM_X86_MCE_H
 
@@ -187,7 +188,6 @@ struct mca_msr_regs {
 
 extern struct mce_vendor_flags mce_flags;
 
-extern struct mca_config mca_cfg;
 extern struct mca_msr_regs msr_ops;
 
 enum mce_notifier_prios {
@@ -285,10 +285,6 @@ int mce_notify_irq(void);
 
 DECLARE_PER_CPU(struct mce, injectm);
 
-extern void register_mce_write_callback(ssize_t (*)(struct file *filp,
-				    const char __user *ubuf,
-				    size_t usize, loff_t *off));
-
 /* Disable CMCI/polling for MCA bank claimed by firmware */
 extern void mce_disable_bank(int bank);
 
@@ -380,6 +376,7 @@ struct smca_bank {
 extern struct smca_bank smca_banks[MAX_NR_BANKS];
 
 extern const char *smca_get_long_name(enum smca_bank_types t);
+extern bool amd_mce_is_memory_error(struct mce *m);
 
 extern int mce_threshold_create_device(unsigned int cpu);
 extern int mce_threshold_remove_device(unsigned int cpu);
@@ -388,6 +385,7 @@ extern int mce_threshold_remove_device(unsigned int cpu);
 
 static inline int mce_threshold_create_device(unsigned int cpu) { return 0; };
 static inline int mce_threshold_remove_device(unsigned int cpu) { return 0; };
+static inline bool amd_mce_is_memory_error(struct mce *m) { return false; };
 
 #endif
 

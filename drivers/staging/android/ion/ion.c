@@ -1,42 +1,32 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- *
  * drivers/staging/android/ion/ion.c
  *
  * Copyright (C) 2011 Google, Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  */
 
+#include <linux/anon_inodes.h>
+#include <linux/debugfs.h>
 #include <linux/device.h>
+#include <linux/dma-buf.h>
 #include <linux/err.h>
+#include <linux/export.h>
 #include <linux/file.h>
 #include <linux/freezer.h>
 #include <linux/fs.h>
-#include <linux/anon_inodes.h>
+#include <linux/idr.h>
 #include <linux/kthread.h>
 #include <linux/list.h>
 #include <linux/memblock.h>
 #include <linux/miscdevice.h>
-#include <linux/export.h>
 #include <linux/mm.h>
 #include <linux/mm_types.h>
 #include <linux/rbtree.h>
-#include <linux/slab.h>
+#include <linux/sched/task.h>
 #include <linux/seq_file.h>
+#include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
-#include <linux/debugfs.h>
-#include <linux/dma-buf.h>
-#include <linux/idr.h>
-#include <linux/sched/task.h>
 
 #include "ion.h"
 
@@ -81,7 +71,6 @@ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
 					    unsigned long flags)
 {
 	struct ion_buffer *buffer;
-	struct sg_table *table;
 	int ret;
 
 	buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
@@ -103,19 +92,17 @@ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
 			goto err2;
 	}
 
-	if (buffer->sg_table == NULL) {
+	if (!buffer->sg_table) {
 		WARN_ONCE(1, "This heap needs to set the sgtable");
 		ret = -EINVAL;
 		goto err1;
 	}
 
-	table = buffer->sg_table;
 	buffer->dev = dev;
 	buffer->size = len;
 
 	buffer->dev = dev;
 	buffer->size = len;
-	INIT_LIST_HEAD(&buffer->vmas);
 	INIT_LIST_HEAD(&buffer->attachments);
 	mutex_init(&buffer->lock);
 	mutex_lock(&dev->buffer_lock);
@@ -135,7 +122,6 @@ void ion_buffer_destroy(struct ion_buffer *buffer)
 	if (WARN_ON(buffer->kmap_cnt > 0))
 		buffer->heap->ops->unmap_kernel(buffer->heap, buffer);
 	buffer->heap->ops->free(buffer);
-	vfree(buffer->pages);
 	kfree(buffer);
 }
 
@@ -163,7 +149,7 @@ static void *ion_buffer_kmap_get(struct ion_buffer *buffer)
 		return buffer->vaddr;
 	}
 	vaddr = buffer->heap->ops->map_kernel(buffer->heap, buffer);
-	if (WARN_ONCE(vaddr == NULL,
+	if (WARN_ONCE(!vaddr,
 		      "heap->ops->map_kernel should return ERR_PTR on error"))
 		return ERR_PTR(-EINVAL);
 	if (IS_ERR(vaddr))
@@ -221,7 +207,7 @@ struct ion_dma_buf_attachment {
 };
 
 static int ion_dma_buf_attach(struct dma_buf *dmabuf, struct device *dev,
-				struct dma_buf_attachment *attachment)
+			      struct dma_buf_attachment *attachment)
 {
 	struct ion_dma_buf_attachment *a;
 	struct sg_table *table;
@@ -264,26 +250,19 @@ static void ion_dma_buf_detatch(struct dma_buf *dmabuf,
 	kfree(a);
 }
 
-
 static struct sg_table *ion_map_dma_buf(struct dma_buf_attachment *attachment,
 					enum dma_data_direction direction)
 {
 	struct ion_dma_buf_attachment *a = attachment->priv;
 	struct sg_table *table;
-	int ret;
 
 	table = a->table;
 
 	if (!dma_map_sg(attachment->dev, table->sgl, table->nents,
-			direction)){
-		ret = -ENOMEM;
-		goto err;
-	}
-	return table;
+			direction))
+		return ERR_PTR(-ENOMEM);
 
-err:
-	free_duped_table(table);
-	return ERR_PTR(ret);
+	return table;
 }
 
 static void ion_unmap_dma_buf(struct dma_buf_attachment *attachment,
@@ -354,11 +333,10 @@ static int ion_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
 		mutex_unlock(&buffer->lock);
 	}
 
-
 	mutex_lock(&buffer->lock);
 	list_for_each_entry(a, &buffer->attachments, list) {
 		dma_sync_sg_for_cpu(a->dev, a->table->sgl, a->table->nents,
-					DMA_BIDIRECTIONAL);
+				    direction);
 	}
 	mutex_unlock(&buffer->lock);
 
@@ -380,7 +358,7 @@ static int ion_dma_buf_end_cpu_access(struct dma_buf *dmabuf,
 	mutex_lock(&buffer->lock);
 	list_for_each_entry(a, &buffer->attachments, list) {
 		dma_sync_sg_for_device(a->dev, a->table->sgl, a->table->nents,
-					DMA_BIDIRECTIONAL);
+				       direction);
 	}
 	mutex_unlock(&buffer->lock);
 
@@ -435,7 +413,7 @@ int ion_alloc(size_t len, unsigned int heap_id_mask, unsigned int flags)
 	}
 	up_read(&dev->lock);
 
-	if (buffer == NULL)
+	if (!buffer)
 		return -ENODEV;
 
 	if (IS_ERR(buffer))
@@ -551,6 +529,7 @@ void ion_device_add_heap(struct ion_heap *heap)
 {
 	struct dentry *debug_file;
 	struct ion_device *dev = internal_dev;
+	int ret;
 
 	if (!heap->ops->allocate || !heap->ops->free)
 		pr_err("%s: can not add heap with invalid ops struct.\n",
@@ -562,8 +541,11 @@ void ion_device_add_heap(struct ion_heap *heap)
 	if (heap->flags & ION_HEAP_FLAG_DEFER_FREE)
 		ion_heap_init_deferred_free(heap);
 
-	if ((heap->flags & ION_HEAP_FLAG_DEFER_FREE) || heap->ops->shrink)
-		ion_heap_init_shrinker(heap);
+	if ((heap->flags & ION_HEAP_FLAG_DEFER_FREE) || heap->ops->shrink) {
+		ret = ion_heap_init_shrinker(heap);
+		if (ret)
+			pr_err("%s: Failed to register shrinker\n", __func__);
+	}
 
 	heap->dev = dev;
 	down_write(&dev->lock);
@@ -579,9 +561,9 @@ void ion_device_add_heap(struct ion_heap *heap)
 		char debug_name[64];
 
 		snprintf(debug_name, 64, "%s_shrink", heap->name);
-		debug_file = debugfs_create_file(
-			debug_name, 0644, dev->debug_root, heap,
-			&debug_shrink_fops);
+		debug_file = debugfs_create_file(debug_name,
+						 0644, dev->debug_root, heap,
+						 &debug_shrink_fops);
 		if (!debug_file) {
 			char buf[256], *path;
 
@@ -596,7 +578,7 @@ void ion_device_add_heap(struct ion_heap *heap)
 }
 EXPORT_SYMBOL(ion_device_add_heap);
 
-int ion_device_create(void)
+static int ion_device_create(void)
 {
 	struct ion_device *idev;
 	int ret;

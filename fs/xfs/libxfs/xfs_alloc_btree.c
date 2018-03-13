@@ -253,7 +253,7 @@ xfs_allocbt_init_ptr_from_cur(
 	ptr->s = agf->agf_roots[cur->bc_btnum];
 }
 
-STATIC __int64_t
+STATIC int64_t
 xfs_bnobt_key_diff(
 	struct xfs_btree_cur	*cur,
 	union xfs_btree_key	*key)
@@ -261,42 +261,42 @@ xfs_bnobt_key_diff(
 	xfs_alloc_rec_incore_t	*rec = &cur->bc_rec.a;
 	xfs_alloc_key_t		*kp = &key->alloc;
 
-	return (__int64_t)be32_to_cpu(kp->ar_startblock) - rec->ar_startblock;
+	return (int64_t)be32_to_cpu(kp->ar_startblock) - rec->ar_startblock;
 }
 
-STATIC __int64_t
+STATIC int64_t
 xfs_cntbt_key_diff(
 	struct xfs_btree_cur	*cur,
 	union xfs_btree_key	*key)
 {
 	xfs_alloc_rec_incore_t	*rec = &cur->bc_rec.a;
 	xfs_alloc_key_t		*kp = &key->alloc;
-	__int64_t		diff;
+	int64_t			diff;
 
-	diff = (__int64_t)be32_to_cpu(kp->ar_blockcount) - rec->ar_blockcount;
+	diff = (int64_t)be32_to_cpu(kp->ar_blockcount) - rec->ar_blockcount;
 	if (diff)
 		return diff;
 
-	return (__int64_t)be32_to_cpu(kp->ar_startblock) - rec->ar_startblock;
+	return (int64_t)be32_to_cpu(kp->ar_startblock) - rec->ar_startblock;
 }
 
-STATIC __int64_t
+STATIC int64_t
 xfs_bnobt_diff_two_keys(
 	struct xfs_btree_cur	*cur,
 	union xfs_btree_key	*k1,
 	union xfs_btree_key	*k2)
 {
-	return (__int64_t)be32_to_cpu(k1->alloc.ar_startblock) -
+	return (int64_t)be32_to_cpu(k1->alloc.ar_startblock) -
 			  be32_to_cpu(k2->alloc.ar_startblock);
 }
 
-STATIC __int64_t
+STATIC int64_t
 xfs_cntbt_diff_two_keys(
 	struct xfs_btree_cur	*cur,
 	union xfs_btree_key	*k1,
 	union xfs_btree_key	*k2)
 {
-	__int64_t		diff;
+	int64_t			diff;
 
 	diff =  be32_to_cpu(k1->alloc.ar_blockcount) -
 		be32_to_cpu(k2->alloc.ar_blockcount);
@@ -307,13 +307,14 @@ xfs_cntbt_diff_two_keys(
 		be32_to_cpu(k2->alloc.ar_startblock);
 }
 
-static bool
+static xfs_failaddr_t
 xfs_allocbt_verify(
 	struct xfs_buf		*bp)
 {
 	struct xfs_mount	*mp = bp->b_target->bt_mount;
 	struct xfs_btree_block	*block = XFS_BUF_TO_BLOCK(bp);
 	struct xfs_perag	*pag = bp->b_pag;
+	xfs_failaddr_t		fa;
 	unsigned int		level;
 
 	/*
@@ -331,29 +332,31 @@ xfs_allocbt_verify(
 	level = be16_to_cpu(block->bb_level);
 	switch (block->bb_magic) {
 	case cpu_to_be32(XFS_ABTB_CRC_MAGIC):
-		if (!xfs_btree_sblock_v5hdr_verify(bp))
-			return false;
+		fa = xfs_btree_sblock_v5hdr_verify(bp);
+		if (fa)
+			return fa;
 		/* fall through */
 	case cpu_to_be32(XFS_ABTB_MAGIC):
 		if (pag && pag->pagf_init) {
 			if (level >= pag->pagf_levels[XFS_BTNUM_BNOi])
-				return false;
+				return __this_address;
 		} else if (level >= mp->m_ag_maxlevels)
-			return false;
+			return __this_address;
 		break;
 	case cpu_to_be32(XFS_ABTC_CRC_MAGIC):
-		if (!xfs_btree_sblock_v5hdr_verify(bp))
-			return false;
+		fa = xfs_btree_sblock_v5hdr_verify(bp);
+		if (fa)
+			return fa;
 		/* fall through */
 	case cpu_to_be32(XFS_ABTC_MAGIC):
 		if (pag && pag->pagf_init) {
 			if (level >= pag->pagf_levels[XFS_BTNUM_CNTi])
-				return false;
+				return __this_address;
 		} else if (level >= mp->m_ag_maxlevels)
-			return false;
+			return __this_address;
 		break;
 	default:
-		return false;
+		return __this_address;
 	}
 
 	return xfs_btree_sblock_verify(bp, mp->m_alloc_mxr[level != 0]);
@@ -363,25 +366,30 @@ static void
 xfs_allocbt_read_verify(
 	struct xfs_buf	*bp)
 {
-	if (!xfs_btree_sblock_verify_crc(bp))
-		xfs_buf_ioerror(bp, -EFSBADCRC);
-	else if (!xfs_allocbt_verify(bp))
-		xfs_buf_ioerror(bp, -EFSCORRUPTED);
+	xfs_failaddr_t	fa;
 
-	if (bp->b_error) {
-		trace_xfs_btree_corrupt(bp, _RET_IP_);
-		xfs_verifier_error(bp);
+	if (!xfs_btree_sblock_verify_crc(bp))
+		xfs_verifier_error(bp, -EFSBADCRC, __this_address);
+	else {
+		fa = xfs_allocbt_verify(bp);
+		if (fa)
+			xfs_verifier_error(bp, -EFSCORRUPTED, fa);
 	}
+
+	if (bp->b_error)
+		trace_xfs_btree_corrupt(bp, _RET_IP_);
 }
 
 static void
 xfs_allocbt_write_verify(
 	struct xfs_buf	*bp)
 {
-	if (!xfs_allocbt_verify(bp)) {
+	xfs_failaddr_t	fa;
+
+	fa = xfs_allocbt_verify(bp);
+	if (fa) {
 		trace_xfs_btree_corrupt(bp, _RET_IP_);
-		xfs_buf_ioerror(bp, -EFSCORRUPTED);
-		xfs_verifier_error(bp);
+		xfs_verifier_error(bp, -EFSCORRUPTED, fa);
 		return;
 	}
 	xfs_btree_sblock_calc_crc(bp);
@@ -392,10 +400,10 @@ const struct xfs_buf_ops xfs_allocbt_buf_ops = {
 	.name = "xfs_allocbt",
 	.verify_read = xfs_allocbt_read_verify,
 	.verify_write = xfs_allocbt_write_verify,
+	.verify_struct = xfs_allocbt_verify,
 };
 
 
-#if defined(DEBUG) || defined(XFS_WARN)
 STATIC int
 xfs_bnobt_keys_inorder(
 	struct xfs_btree_cur	*cur,
@@ -442,7 +450,6 @@ xfs_cntbt_recs_inorder(
 		 be32_to_cpu(r1->alloc.ar_startblock) <
 		 be32_to_cpu(r2->alloc.ar_startblock));
 }
-#endif /* DEBUG */
 
 static const struct xfs_btree_ops xfs_bnobt_ops = {
 	.rec_len		= sizeof(xfs_alloc_rec_t),
@@ -462,10 +469,8 @@ static const struct xfs_btree_ops xfs_bnobt_ops = {
 	.key_diff		= xfs_bnobt_key_diff,
 	.buf_ops		= &xfs_allocbt_buf_ops,
 	.diff_two_keys		= xfs_bnobt_diff_two_keys,
-#if defined(DEBUG) || defined(XFS_WARN)
 	.keys_inorder		= xfs_bnobt_keys_inorder,
 	.recs_inorder		= xfs_bnobt_recs_inorder,
-#endif
 };
 
 static const struct xfs_btree_ops xfs_cntbt_ops = {
@@ -486,10 +491,8 @@ static const struct xfs_btree_ops xfs_cntbt_ops = {
 	.key_diff		= xfs_cntbt_key_diff,
 	.buf_ops		= &xfs_allocbt_buf_ops,
 	.diff_two_keys		= xfs_cntbt_diff_two_keys,
-#if defined(DEBUG) || defined(XFS_WARN)
 	.keys_inorder		= xfs_cntbt_keys_inorder,
 	.recs_inorder		= xfs_cntbt_recs_inorder,
-#endif
 };
 
 /*

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012 Texas Instruments Ltd
+ * Copyright (C) 2012 Texas Instruments Incorporated - http://www.ti.com/
  * Author: Archit Taneja <archit@ti.com>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -132,19 +132,6 @@ struct omap_dss_device *omap_dss_get_output(enum omap_dss_output_id id)
 	return NULL;
 }
 EXPORT_SYMBOL(omap_dss_get_output);
-
-struct omap_dss_device *omap_dss_find_output(const char *name)
-{
-	struct omap_dss_device *out;
-
-	list_for_each_entry(out, &output_list, list) {
-		if (strcmp(out->name, name) == 0)
-			return omap_dss_get_device(out);
-	}
-
-	return NULL;
-}
-EXPORT_SYMBOL(omap_dss_find_output);
 
 struct omap_dss_device *omap_dss_find_output_by_port_node(struct device_node *port)
 {

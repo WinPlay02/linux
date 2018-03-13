@@ -114,6 +114,10 @@
 	status = "okay";
 };
 
+&codec {
+	status = "okay";
+};
+
 &ehci0 {
 	status = "okay";
 };
@@ -267,10 +271,6 @@
 &usb_otg {
 	dr_mode = "otg";
 	status = "okay";
-};
-
-&usb0_vbus_pin_a {
-	pins = "PG12";
 };
 
 &usbphy {

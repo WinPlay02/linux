@@ -1,7 +1,7 @@
 /*
  * NEC NL8048HL11 Panel driver
  *
- * Copyright (C) 2010 Texas Instruments Inc.
+ * Copyright (C) 2010 Texas Instruments Incorporated - http://www.ti.com/
  * Author: Erik Gilling <konkers@android.com>
  * Converted to new DSS device model: Tomi Valkeinen <tomi.valkeinen@ti.com>
  *
@@ -24,8 +24,6 @@ struct panel_drv_data {
 	struct omap_dss_device *in;
 
 	struct videomode vm;
-
-	int data_lines;
 
 	int res_gpio;
 	int qvga_gpio;
@@ -153,8 +151,6 @@ static int nec_8048_enable(struct omap_dss_device *dssdev)
 	if (omapdss_device_is_enabled(dssdev))
 		return 0;
 
-	if (ddata->data_lines)
-		in->ops.dpi->set_data_lines(in, ddata->data_lines);
 	in->ops.dpi->set_timings(in, &ddata->vm);
 
 	r = in->ops.dpi->enable(in);
@@ -224,8 +220,6 @@ static struct omap_dss_driver nec_8048_ops = {
 	.set_timings	= nec_8048_set_timings,
 	.get_timings	= nec_8048_get_timings,
 	.check_timings	= nec_8048_check_timings,
-
-	.get_resolution	= omapdss_default_get_resolution,
 };
 
 static int nec_8048_probe_of(struct spi_device *spi)

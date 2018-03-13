@@ -35,14 +35,12 @@ struct panel_drv_data {
 	struct omap_dss_device dssdev;
 	struct omap_dss_device *in;
 
-	int data_lines;
-
 	struct videomode vm;
 
 	struct spi_device *spi_dev;
 };
 
-static struct videomode td028ttec1_panel_vm = {
+static const struct videomode td028ttec1_panel_vm = {
 	.hactive	= 480,
 	.vactive	= 640,
 	.pixelclock	= 22153000,
@@ -207,8 +205,6 @@ static int td028ttec1_panel_enable(struct omap_dss_device *dssdev)
 	if (omapdss_device_is_enabled(dssdev))
 		return 0;
 
-	if (ddata->data_lines)
-		in->ops.dpi->set_data_lines(in, ddata->data_lines);
 	in->ops.dpi->set_timings(in, &ddata->vm);
 
 	r = in->ops.dpi->enable(in);
@@ -423,7 +419,6 @@ static int td028ttec1_panel_probe(struct spi_device *spi)
 	dssdev->type = OMAP_DISPLAY_TYPE_DPI;
 	dssdev->owner = THIS_MODULE;
 	dssdev->panel.vm = ddata->vm;
-	dssdev->phy.dpi.data_lines = ddata->data_lines;
 
 	r = omapdss_register_display(dssdev);
 	if (r) {
@@ -457,15 +452,27 @@ static int td028ttec1_panel_remove(struct spi_device *spi)
 }
 
 static const struct of_device_id td028ttec1_of_match[] = {
+	{ .compatible = "omapdss,tpo,td028ttec1", },
+	/* keep to not break older DTB */
 	{ .compatible = "omapdss,toppoly,td028ttec1", },
 	{},
 };
 
 MODULE_DEVICE_TABLE(of, td028ttec1_of_match);
 
+static const struct spi_device_id td028ttec1_ids[] = {
+	{ "toppoly,td028ttec1", 0 },
+	{ "tpo,td028ttec1", 0},
+	{ /* sentinel */ }
+};
+
+MODULE_DEVICE_TABLE(spi, td028ttec1_ids);
+
+
 static struct spi_driver td028ttec1_spi_driver = {
 	.probe		= td028ttec1_panel_probe,
 	.remove		= td028ttec1_panel_remove,
+	.id_table	= td028ttec1_ids,
 
 	.driver         = {
 		.name   = "panel-tpo-td028ttec1",
@@ -476,7 +483,6 @@ static struct spi_driver td028ttec1_spi_driver = {
 
 module_spi_driver(td028ttec1_spi_driver);
 
-MODULE_ALIAS("spi:toppoly,td028ttec1");
 MODULE_AUTHOR("H. Nikolaus Schaller <hns@goldelico.com>");
 MODULE_DESCRIPTION("Toppoly TD028TTEC1 panel driver");
 MODULE_LICENSE("GPL");

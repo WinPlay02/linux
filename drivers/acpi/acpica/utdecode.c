@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2017, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -395,11 +395,6 @@ const char *acpi_ut_get_reference_name(union acpi_operand_object *object)
 	return (acpi_gbl_ref_class_names[object->reference.class]);
 }
 
-#if defined(ACPI_DEBUG_OUTPUT) || defined(ACPI_DEBUGGER)
-/*
- * Strings and procedures used for debug only
- */
-
 /*******************************************************************************
  *
  * FUNCTION:    acpi_ut_get_mutex_name
@@ -433,6 +428,12 @@ const char *acpi_ut_get_mutex_name(u32 mutex_id)
 	return (acpi_gbl_mutex_names[mutex_id]);
 }
 
+#if defined(ACPI_DEBUG_OUTPUT) || defined(ACPI_DEBUGGER)
+
+/*
+ * Strings and procedures used for debug only
+ */
+
 /*******************************************************************************
  *
  * FUNCTION:    acpi_ut_get_notify_name
@@ -460,9 +461,11 @@ static const char *acpi_gbl_generic_notify[ACPI_GENERIC_NOTIFY_MAX + 1] = {
 	/* 09 */ "Device PLD Check",
 	/* 0A */ "Reserved",
 	/* 0B */ "System Locality Update",
-					/* 0C */ "Shutdown Request",
-					/* Reserved in ACPI 6.0 */
-	/* 0D */ "System Resource Affinity Update"
+								/* 0C */ "Reserved (was previously Shutdown Request)",
+								/* Reserved in ACPI 6.0 */
+	/* 0D */ "System Resource Affinity Update",
+								/* 0E */ "Heterogeneous Memory Attributes Update"
+								/* ACPI 6.2 */
 };
 
 static const char *acpi_gbl_device_notify[5] = {

@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2017, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -368,11 +368,24 @@ acpi_ex_resolve_multiple(struct acpi_walk_state *walk_state,
 								*)obj_desc);
 		}
 
-		if (!obj_desc) {
-			ACPI_ERROR((AE_INFO,
-				    "[%4.4s] Node is unresolved or uninitialized",
-				    acpi_ut_get_node_name(node)));
-			return_ACPI_STATUS(AE_AML_UNINITIALIZED_NODE);
+		switch (type) {
+		case ACPI_TYPE_DEVICE:
+		case ACPI_TYPE_THERMAL:
+
+			/* These types have no attached subobject */
+			break;
+
+		default:
+
+			/* All other types require a subobject */
+
+			if (!obj_desc) {
+				ACPI_ERROR((AE_INFO,
+					    "[%4.4s] Node is unresolved or uninitialized",
+					    acpi_ut_get_node_name(node)));
+				return_ACPI_STATUS(AE_AML_UNINITIALIZED_NODE);
+			}
+			break;
 		}
 		break;
 

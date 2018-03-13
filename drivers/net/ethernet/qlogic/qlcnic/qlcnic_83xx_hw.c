@@ -242,6 +242,8 @@ static struct qlcnic_hardware_ops qlcnic_83xx_hw_ops = {
 	.get_cap_size			= qlcnic_83xx_get_cap_size,
 	.set_sys_info			= qlcnic_83xx_set_sys_info,
 	.store_cap_mask			= qlcnic_83xx_store_cap_mask,
+	.encap_rx_offload		= qlcnic_83xx_encap_rx_offload,
+	.encap_tx_offload		= qlcnic_83xx_encap_tx_offload,
 };
 
 static struct qlcnic_nic_template qlcnic_83xx_ops = {
@@ -3889,7 +3891,7 @@ static void qlcnic_83xx_flush_mbx_queue(struct qlcnic_adapter *adapter)
 	struct list_head *head = &mbx->cmd_q;
 	struct qlcnic_cmd_args *cmd = NULL;
 
-	spin_lock(&mbx->queue_lock);
+	spin_lock_bh(&mbx->queue_lock);
 
 	while (!list_empty(head)) {
 		cmd = list_entry(head->next, struct qlcnic_cmd_args, list);
@@ -3900,7 +3902,7 @@ static void qlcnic_83xx_flush_mbx_queue(struct qlcnic_adapter *adapter)
 		qlcnic_83xx_notify_cmd_completion(adapter, cmd);
 	}
 
-	spin_unlock(&mbx->queue_lock);
+	spin_unlock_bh(&mbx->queue_lock);
 }
 
 static int qlcnic_83xx_check_mbx_status(struct qlcnic_adapter *adapter)
@@ -3936,12 +3938,12 @@ static void qlcnic_83xx_dequeue_mbx_cmd(struct qlcnic_adapter *adapter,
 {
 	struct qlcnic_mailbox *mbx = adapter->ahw->mailbox;
 
-	spin_lock(&mbx->queue_lock);
+	spin_lock_bh(&mbx->queue_lock);
 
 	list_del(&cmd->list);
 	mbx->num_cmds--;
 
-	spin_unlock(&mbx->queue_lock);
+	spin_unlock_bh(&mbx->queue_lock);
 
 	qlcnic_83xx_notify_cmd_completion(adapter, cmd);
 }
@@ -4006,7 +4008,7 @@ static int qlcnic_83xx_enqueue_mbx_cmd(struct qlcnic_adapter *adapter,
 		init_completion(&cmd->completion);
 		cmd->rsp_opcode = QLC_83XX_MBX_RESPONSE_UNKNOWN;
 
-		spin_lock(&mbx->queue_lock);
+		spin_lock_bh(&mbx->queue_lock);
 
 		list_add_tail(&cmd->list, &mbx->cmd_q);
 		mbx->num_cmds++;
@@ -4014,7 +4016,7 @@ static int qlcnic_83xx_enqueue_mbx_cmd(struct qlcnic_adapter *adapter,
 		*timeout = cmd->total_cmds * QLC_83XX_MBX_TIMEOUT;
 		queue_work(mbx->work_q, &mbx->work);
 
-		spin_unlock(&mbx->queue_lock);
+		spin_unlock_bh(&mbx->queue_lock);
 
 		return 0;
 	}
@@ -4110,15 +4112,15 @@ static void qlcnic_83xx_mailbox_worker(struct work_struct *work)
 		mbx->rsp_status = QLC_83XX_MBX_RESPONSE_WAIT;
 		spin_unlock_irqrestore(&mbx->aen_lock, flags);
 
-		spin_lock(&mbx->queue_lock);
+		spin_lock_bh(&mbx->queue_lock);
 
 		if (list_empty(head)) {
-			spin_unlock(&mbx->queue_lock);
+			spin_unlock_bh(&mbx->queue_lock);
 			return;
 		}
 		cmd = list_entry(head->next, struct qlcnic_cmd_args, list);
 
-		spin_unlock(&mbx->queue_lock);
+		spin_unlock_bh(&mbx->queue_lock);
 
 		mbx_ops->encode_cmd(adapter, cmd);
 		mbx_ops->nofity_fw(adapter, QLC_83XX_MBX_REQUEST);

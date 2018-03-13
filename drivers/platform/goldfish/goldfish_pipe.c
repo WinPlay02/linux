@@ -266,7 +266,7 @@ struct goldfish_pipe_dev {
 	unsigned char __iomem *base;
 };
 
-struct goldfish_pipe_dev pipe_dev[1] = {};
+static struct goldfish_pipe_dev pipe_dev[1] = {};
 
 static int goldfish_cmd_locked(struct goldfish_pipe *pipe, enum PipeCmdCode cmd)
 {
@@ -536,10 +536,10 @@ static ssize_t goldfish_pipe_write(struct file *filp,
 			/* is_write */ 1);
 }
 
-static unsigned int goldfish_pipe_poll(struct file *filp, poll_table *wait)
+static __poll_t goldfish_pipe_poll(struct file *filp, poll_table *wait)
 {
 	struct goldfish_pipe *pipe = filp->private_data;
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 	int status;
 
 	poll_wait(filp, &pipe->wake_queue, wait);
@@ -549,13 +549,13 @@ static unsigned int goldfish_pipe_poll(struct file *filp, poll_table *wait)
 		return -ERESTARTSYS;
 
 	if (status & PIPE_POLL_IN)
-		mask |= POLLIN | POLLRDNORM;
+		mask |= EPOLLIN | EPOLLRDNORM;
 	if (status & PIPE_POLL_OUT)
-		mask |= POLLOUT | POLLWRNORM;
+		mask |= EPOLLOUT | EPOLLWRNORM;
 	if (status & PIPE_POLL_HUP)
-		mask |= POLLHUP;
+		mask |= EPOLLHUP;
 	if (test_bit(BIT_CLOSED_ON_HOST, &pipe->flags))
-		mask |= POLLERR;
+		mask |= EPOLLERR;
 
 	return mask;
 }
@@ -704,7 +704,7 @@ static int get_free_pipe_id_locked(struct goldfish_pipe_dev *dev)
 		/* Reallocate the array */
 		u32 new_capacity = 2 * dev->pipes_capacity;
 		struct goldfish_pipe **pipes =
-			kcalloc(new_capacity, sizeof(*pipes), GFP_KERNEL);
+			kcalloc(new_capacity, sizeof(*pipes), GFP_ATOMIC);
 		if (!pipes)
 			return -ENOMEM;
 		memcpy(pipes, dev->pipes, sizeof(*pipes) * dev->pipes_capacity);

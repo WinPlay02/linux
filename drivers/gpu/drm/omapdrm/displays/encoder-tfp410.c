@@ -1,7 +1,7 @@
 /*
  * TFP410 DPI-to-DVI encoder driver
  *
- * Copyright (C) 2013 Texas Instruments
+ * Copyright (C) 2013 Texas Instruments Incorporated - http://www.ti.com/
  * Author: Tomi Valkeinen <tomi.valkeinen@ti.com>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -22,7 +22,6 @@ struct panel_drv_data {
 	struct omap_dss_device *in;
 
 	int pd_gpio;
-	int data_lines;
 
 	struct videomode vm;
 };
@@ -82,8 +81,6 @@ static int tfp410_enable(struct omap_dss_device *dssdev)
 		return 0;
 
 	in->ops.dpi->set_timings(in, &ddata->vm);
-	if (ddata->data_lines)
-		in->ops.dpi->set_data_lines(in, ddata->data_lines);
 
 	r = in->ops.dpi->enable(in);
 	if (r)
@@ -176,7 +173,8 @@ static int tfp410_probe_of(struct platform_device *pdev)
 	if (gpio_is_valid(gpio) || gpio == -ENOENT) {
 		ddata->pd_gpio = gpio;
 	} else {
-		dev_err(&pdev->dev, "failed to parse PD gpio\n");
+		if (gpio != -EPROBE_DEFER)
+			dev_err(&pdev->dev, "failed to parse PD gpio\n");
 		return gpio;
 	}
 
@@ -226,7 +224,6 @@ static int tfp410_probe(struct platform_device *pdev)
 	dssdev->type = OMAP_DISPLAY_TYPE_DPI;
 	dssdev->output_type = OMAP_DISPLAY_TYPE_DVI;
 	dssdev->owner = THIS_MODULE;
-	dssdev->phy.dpi.data_lines = ddata->data_lines;
 	dssdev->port_num = 1;
 
 	r = omapdss_register_output(dssdev);

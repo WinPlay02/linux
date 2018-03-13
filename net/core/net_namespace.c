@@ -35,7 +35,7 @@ LIST_HEAD(net_namespace_list);
 EXPORT_SYMBOL_GPL(net_namespace_list);
 
 struct net init_net = {
-	.count		= ATOMIC_INIT(1),
+	.count		= REFCOUNT_INIT(1),
 	.dev_base_head	= LIST_HEAD_INIT(init_net.dev_base_head),
 };
 EXPORT_SYMBOL(init_net);
@@ -221,19 +221,29 @@ static void rtnl_net_notifyid(struct net *net, int cmd, int id);
  */
 int peernet2id_alloc(struct net *net, struct net *peer)
 {
-	bool alloc;
+	bool alloc = false, alive = false;
 	int id;
 
-	if (atomic_read(&net->count) == 0)
+	if (refcount_read(&net->count) == 0)
 		return NETNSA_NSID_NOT_ASSIGNED;
 	spin_lock_bh(&net->nsid_lock);
-	alloc = atomic_read(&peer->count) == 0 ? false : true;
+	/*
+	 * When peer is obtained from RCU lists, we may race with
+	 * its cleanup. Check whether it's alive, and this guarantees
+	 * we never hash a peer back to net->netns_ids, after it has
+	 * just been idr_remove()'d from there in cleanup_net().
+	 */
+	if (maybe_get_net(peer))
+		alive = alloc = true;
 	id = __peernet2id_alloc(net, peer, &alloc);
 	spin_unlock_bh(&net->nsid_lock);
 	if (alloc && id >= 0)
 		rtnl_net_notifyid(net, RTM_NEWNSID, id);
+	if (alive)
+		put_net(peer);
 	return id;
 }
+EXPORT_SYMBOL_GPL(peernet2id_alloc);
 
 /* This function returns, if assigned, the id of a peer netns. */
 int peernet2id(struct net *net, struct net *peer)
@@ -263,11 +273,9 @@ struct net *get_net_ns_by_id(struct net *net, int id)
 		return NULL;
 
 	rcu_read_lock();
-	spin_lock_bh(&net->nsid_lock);
 	peer = idr_find(&net->netns_ids, id);
 	if (peer)
-		get_net(peer);
-	spin_unlock_bh(&net->nsid_lock);
+		peer = maybe_get_net(peer);
 	rcu_read_unlock();
 
 	return peer;
@@ -283,8 +291,8 @@ static __net_init int setup_net(struct net *net, struct user_namespace *user_ns)
 	int error = 0;
 	LIST_HEAD(net_exit_list);
 
-	atomic_set(&net->count, 1);
-	atomic_set(&net->passive, 1);
+	refcount_set(&net->count, 1);
+	refcount_set(&net->passive, 1);
 	net->dev_base_seq = 1;
 	net->user_ns = user_ns;
 	idr_init(&net->netns_ids);
@@ -380,7 +388,7 @@ static void net_free(struct net *net)
 void net_drop_ns(void *p)
 {
 	struct net *ns = p;
-	if (ns && atomic_dec_and_test(&ns->passive))
+	if (ns && refcount_dec_and_test(&ns->passive))
 		net_free(ns);
 }
 
@@ -431,13 +439,40 @@ struct net *copy_net_ns(unsigned long flags,
 	return net;
 }
 
+static void unhash_nsid(struct net *net, struct net *last)
+{
+	struct net *tmp;
+	/* This function is only called from cleanup_net() work,
+	 * and this work is the only process, that may delete
+	 * a net from net_namespace_list. So, when the below
+	 * is executing, the list may only grow. Thus, we do not
+	 * use for_each_net_rcu() or rtnl_lock().
+	 */
+	for_each_net(tmp) {
+		int id;
+
+		spin_lock_bh(&tmp->nsid_lock);
+		id = __peernet2id(tmp, net);
+		if (id >= 0)
+			idr_remove(&tmp->netns_ids, id);
+		spin_unlock_bh(&tmp->nsid_lock);
+		if (id >= 0)
+			rtnl_net_notifyid(tmp, RTM_DELNSID, id);
+		if (tmp == last)
+			break;
+	}
+	spin_lock_bh(&net->nsid_lock);
+	idr_destroy(&net->netns_ids);
+	spin_unlock_bh(&net->nsid_lock);
+}
+
 static DEFINE_SPINLOCK(cleanup_list_lock);
 static LIST_HEAD(cleanup_list);  /* Must hold cleanup_list_lock to touch */
 
 static void cleanup_net(struct work_struct *work)
 {
 	const struct pernet_operations *ops;
-	struct net *net, *tmp;
+	struct net *net, *tmp, *last;
 	struct list_head net_kill_list;
 	LIST_HEAD(net_exit_list);
 
@@ -450,26 +485,25 @@ static void cleanup_net(struct work_struct *work)
 
 	/* Don't let anyone else find us. */
 	rtnl_lock();
-	list_for_each_entry(net, &net_kill_list, cleanup_list) {
+	list_for_each_entry(net, &net_kill_list, cleanup_list)
 		list_del_rcu(&net->list);
-		list_add_tail(&net->exit_list, &net_exit_list);
-		for_each_net(tmp) {
-			int id;
-
-			spin_lock_bh(&tmp->nsid_lock);
-			id = __peernet2id(tmp, net);
-			if (id >= 0)
-				idr_remove(&tmp->netns_ids, id);
-			spin_unlock_bh(&tmp->nsid_lock);
-			if (id >= 0)
-				rtnl_net_notifyid(tmp, RTM_DELNSID, id);
-		}
-		spin_lock_bh(&net->nsid_lock);
-		idr_destroy(&net->netns_ids);
-		spin_unlock_bh(&net->nsid_lock);
-
-	}
+	/* Cache last net. After we unlock rtnl, no one new net
+	 * added to net_namespace_list can assign nsid pointer
+	 * to a net from net_kill_list (see peernet2id_alloc()).
+	 * So, we skip them in unhash_nsid().
+	 *
+	 * Note, that unhash_nsid() does not delete nsid links
+	 * between net_kill_list's nets, as they've already
+	 * deleted from net_namespace_list. But, this would be
+	 * useless anyway, as netns_ids are destroyed there.
+	 */
+	last = list_last_entry(&net_namespace_list, struct net, list);
 	rtnl_unlock();
+
+	list_for_each_entry(net, &net_kill_list, cleanup_list) {
+		unhash_nsid(net, last);
+		list_add_tail(&net->exit_list, &net_exit_list);
+	}
 
 	/*
 	 * Another CPU might be rcu-iterating the list, wait for it.
@@ -501,6 +535,23 @@ static void cleanup_net(struct work_struct *work)
 		net_drop_ns(net);
 	}
 }
+
+/**
+ * net_ns_barrier - wait until concurrent net_cleanup_work is done
+ *
+ * cleanup_net runs from work queue and will first remove namespaces
+ * from the global list, then run net exit functions.
+ *
+ * Call this in module exit path to make sure that all netns
+ * ->exit ops have been invoked before the function is removed.
+ */
+void net_ns_barrier(void)
+{
+	mutex_lock(&net_mutex);
+	mutex_unlock(&net_mutex);
+}
+EXPORT_SYMBOL(net_ns_barrier);
+
 static DECLARE_WORK(net_cleanup_work, cleanup_net);
 
 void __put_net(struct net *net)
@@ -596,6 +647,7 @@ static int rtnl_net_newid(struct sk_buff *skb, struct nlmsghdr *nlh,
 {
 	struct net *net = sock_net(skb->sk);
 	struct nlattr *tb[NETNSA_MAX + 1];
+	struct nlattr *nla;
 	struct net *peer;
 	int nsid, err;
 
@@ -603,23 +655,35 @@ static int rtnl_net_newid(struct sk_buff *skb, struct nlmsghdr *nlh,
 			  rtnl_net_policy, extack);
 	if (err < 0)
 		return err;
-	if (!tb[NETNSA_NSID])
+	if (!tb[NETNSA_NSID]) {
+		NL_SET_ERR_MSG(extack, "nsid is missing");
 		return -EINVAL;
+	}
 	nsid = nla_get_s32(tb[NETNSA_NSID]);
 
-	if (tb[NETNSA_PID])
+	if (tb[NETNSA_PID]) {
 		peer = get_net_ns_by_pid(nla_get_u32(tb[NETNSA_PID]));
-	else if (tb[NETNSA_FD])
+		nla = tb[NETNSA_PID];
+	} else if (tb[NETNSA_FD]) {
 		peer = get_net_ns_by_fd(nla_get_u32(tb[NETNSA_FD]));
-	else
+		nla = tb[NETNSA_FD];
+	} else {
+		NL_SET_ERR_MSG(extack, "Peer netns reference is missing");
 		return -EINVAL;
-	if (IS_ERR(peer))
+	}
+	if (IS_ERR(peer)) {
+		NL_SET_BAD_ATTR(extack, nla);
+		NL_SET_ERR_MSG(extack, "Peer netns reference is invalid");
 		return PTR_ERR(peer);
+	}
 
 	spin_lock_bh(&net->nsid_lock);
 	if (__peernet2id(net, peer) >= 0) {
 		spin_unlock_bh(&net->nsid_lock);
 		err = -EEXIST;
+		NL_SET_BAD_ATTR(extack, nla);
+		NL_SET_ERR_MSG(extack,
+			       "Peer netns already has a nsid assigned");
 		goto out;
 	}
 
@@ -628,6 +692,10 @@ static int rtnl_net_newid(struct sk_buff *skb, struct nlmsghdr *nlh,
 	if (err >= 0) {
 		rtnl_net_notifyid(net, RTM_NEWNSID, err);
 		err = 0;
+	} else if (err == -ENOSPC && nsid >= 0) {
+		err = -EEXIST;
+		NL_SET_BAD_ATTR(extack, tb[NETNSA_NSID]);
+		NL_SET_ERR_MSG(extack, "The specified nsid is already used");
 	}
 out:
 	put_net(peer);
@@ -670,6 +738,7 @@ static int rtnl_net_getid(struct sk_buff *skb, struct nlmsghdr *nlh,
 {
 	struct net *net = sock_net(skb->sk);
 	struct nlattr *tb[NETNSA_MAX + 1];
+	struct nlattr *nla;
 	struct sk_buff *msg;
 	struct net *peer;
 	int err, id;
@@ -678,15 +747,22 @@ static int rtnl_net_getid(struct sk_buff *skb, struct nlmsghdr *nlh,
 			  rtnl_net_policy, extack);
 	if (err < 0)
 		return err;
-	if (tb[NETNSA_PID])
+	if (tb[NETNSA_PID]) {
 		peer = get_net_ns_by_pid(nla_get_u32(tb[NETNSA_PID]));
-	else if (tb[NETNSA_FD])
+		nla = tb[NETNSA_PID];
+	} else if (tb[NETNSA_FD]) {
 		peer = get_net_ns_by_fd(nla_get_u32(tb[NETNSA_FD]));
-	else
+		nla = tb[NETNSA_FD];
+	} else {
+		NL_SET_ERR_MSG(extack, "Peer netns reference is missing");
 		return -EINVAL;
+	}
 
-	if (IS_ERR(peer))
+	if (IS_ERR(peer)) {
+		NL_SET_BAD_ATTR(extack, nla);
+		NL_SET_ERR_MSG(extack, "Peer netns reference is invalid");
 		return PTR_ERR(peer);
+	}
 
 	msg = nlmsg_new(rtnl_net_get_size(), GFP_KERNEL);
 	if (!msg) {
@@ -813,9 +889,10 @@ static int __init net_ns_init(void)
 
 	register_pernet_subsys(&net_ns_ops);
 
-	rtnl_register(PF_UNSPEC, RTM_NEWNSID, rtnl_net_newid, NULL, NULL);
+	rtnl_register(PF_UNSPEC, RTM_NEWNSID, rtnl_net_newid, NULL,
+		      RTNL_FLAG_DOIT_UNLOCKED);
 	rtnl_register(PF_UNSPEC, RTM_GETNSID, rtnl_net_getid, rtnl_net_dumpid,
-		      NULL);
+		      RTNL_FLAG_DOIT_UNLOCKED);
 
 	return 0;
 }

@@ -121,6 +121,7 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned num_ibs,
 {
 	struct amdgpu_device *adev = ring->adev;
 	struct amdgpu_ib *ib = &ibs[0];
+	struct dma_fence *tmp = NULL;
 	bool skip_preamble, need_ctx_switch;
 	unsigned patch_offset = ~0;
 	struct amdgpu_vm *vm;
@@ -129,6 +130,7 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned num_ibs,
 
 	unsigned i;
 	int r = 0;
+	bool need_pipe_sync = false;
 
 	if (num_ibs == 0)
 		return -EINVAL;
@@ -147,7 +149,7 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned num_ibs,
 		return -EINVAL;
 	}
 
-	if (vm && !job->vm_id) {
+	if (vm && !job->vmid) {
 		dev_err(adev->dev, "VM IB without ID\n");
 		return -EINVAL;
 	}
@@ -160,11 +162,19 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned num_ibs,
 		dev_err(adev->dev, "scheduling IB failed (%d).\n", r);
 		return r;
 	}
-	if (ring->funcs->emit_pipeline_sync && job && job->need_pipeline_sync)
-		amdgpu_ring_emit_pipeline_sync(ring);
 
-	if (vm) {
-		r = amdgpu_vm_flush(ring, job);
+	if (ring->funcs->emit_pipeline_sync && job &&
+	    ((tmp = amdgpu_sync_get_fence(&job->sched_sync, NULL)) ||
+	     amdgpu_vm_need_pipeline_sync(ring, job))) {
+		need_pipe_sync = true;
+		dma_fence_put(tmp);
+	}
+
+	if (ring->funcs->insert_start)
+		ring->funcs->insert_start(ring);
+
+	if (job) {
+		r = amdgpu_vm_flush(ring, job, need_pipe_sync);
 		if (r) {
 			amdgpu_ring_undo(ring);
 			return r;
@@ -188,8 +198,6 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned num_ibs,
 			status |= AMDGPU_HAVE_CTX_SWITCH;
 		status |= job->preamble_status;
 
-		if (vm)
-			status |= AMDGPU_VM_DOMAIN;
 		amdgpu_ring_emit_cntxcntl(ring, status);
 	}
 
@@ -203,10 +211,13 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned num_ibs,
 			!amdgpu_sriov_vf(adev)) /* for SRIOV preemption, Preamble CE ib must be inserted anyway */
 			continue;
 
-		amdgpu_ring_emit_ib(ring, ib, job ? job->vm_id : 0,
+		amdgpu_ring_emit_ib(ring, ib, job ? job->vmid : 0,
 				    need_ctx_switch);
 		need_ctx_switch = false;
 	}
+
+	if (ring->funcs->emit_tmz)
+		amdgpu_ring_emit_tmz(ring, false);
 
 	if (ring->funcs->emit_hdp_invalidate
 #ifdef CONFIG_X86_64
@@ -218,9 +229,8 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned num_ibs,
 	r = amdgpu_fence_emit(ring, f);
 	if (r) {
 		dev_err(adev->dev, "failed to emit fence (%d)\n", r);
-		if (job && job->vm_id)
-			amdgpu_vm_reset_id(adev, ring->funcs->vmhub,
-					   job->vm_id);
+		if (job && job->vmid)
+			amdgpu_vmid_reset(adev, ring->funcs->vmhub, job->vmid);
 		amdgpu_ring_undo(ring);
 		return r;
 	}

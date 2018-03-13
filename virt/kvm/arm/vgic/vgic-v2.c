@@ -62,6 +62,7 @@ void vgic_v2_fold_lr_state(struct kvm_vcpu *vcpu)
 	struct vgic_cpu *vgic_cpu = &vcpu->arch.vgic_cpu;
 	struct vgic_v2_cpu_if *cpuif = &vgic_cpu->vgic_v2;
 	int lr;
+	unsigned long flags;
 
 	cpuif->vgic_hcr &= ~GICH_HCR_UIE;
 
@@ -77,7 +78,7 @@ void vgic_v2_fold_lr_state(struct kvm_vcpu *vcpu)
 
 		irq = vgic_get_irq(vcpu->kvm, vcpu, intid);
 
-		spin_lock(&irq->irq_lock);
+		spin_lock_irqsave(&irq->irq_lock, flags);
 
 		/* Always preserve the active bit */
 		irq->active = !!(val & GICH_LR_ACTIVE_BIT);
@@ -104,7 +105,27 @@ void vgic_v2_fold_lr_state(struct kvm_vcpu *vcpu)
 				irq->pending_latch = false;
 		}
 
-		spin_unlock(&irq->irq_lock);
+		/*
+		 * Level-triggered mapped IRQs are special because we only
+		 * observe rising edges as input to the VGIC.
+		 *
+		 * If the guest never acked the interrupt we have to sample
+		 * the physical line and set the line level, because the
+		 * device state could have changed or we simply need to
+		 * process the still pending interrupt later.
+		 *
+		 * If this causes us to lower the level, we have to also clear
+		 * the physical active state, since we will otherwise never be
+		 * told when the interrupt becomes asserted again.
+		 */
+		if (vgic_irq_is_mapped_level(irq) && (val & GICH_LR_PENDING_BIT)) {
+			irq->line_level = vgic_get_phys_line_level(irq);
+
+			if (!irq->line_level)
+				vgic_irq_set_phys_active(irq, false);
+		}
+
+		spin_unlock_irqrestore(&irq->irq_lock, flags);
 		vgic_put_irq(vcpu->kvm, irq);
 	}
 
@@ -161,6 +182,15 @@ void vgic_v2_populate_lr(struct kvm_vcpu *vcpu, struct vgic_irq *irq, int lr)
 			val |= GICH_LR_EOI;
 	}
 
+	/*
+	 * Level-triggered mapped IRQs are special because we only observe
+	 * rising edges as input to the VGIC.  We therefore lower the line
+	 * level here, so that we can take new virtual IRQs.  See
+	 * vgic_v2_fold_lr_state for more info.
+	 */
+	if (vgic_irq_is_mapped_level(irq) && (val & GICH_LR_PENDING_BIT))
+		irq->line_level = false;
+
 	/* The GICv2 LR only holds five bits of priority. */
 	val |= (irq->priority >> 3) << GICH_LR_PRIORITY_SHIFT;
 
@@ -177,7 +207,18 @@ void vgic_v2_set_vmcr(struct kvm_vcpu *vcpu, struct vgic_vmcr *vmcrp)
 	struct vgic_v2_cpu_if *cpu_if = &vcpu->arch.vgic_cpu.vgic_v2;
 	u32 vmcr;
 
-	vmcr  = (vmcrp->ctlr << GICH_VMCR_CTRL_SHIFT) & GICH_VMCR_CTRL_MASK;
+	vmcr = (vmcrp->grpen0 << GICH_VMCR_ENABLE_GRP0_SHIFT) &
+		GICH_VMCR_ENABLE_GRP0_MASK;
+	vmcr |= (vmcrp->grpen1 << GICH_VMCR_ENABLE_GRP1_SHIFT) &
+		GICH_VMCR_ENABLE_GRP1_MASK;
+	vmcr |= (vmcrp->ackctl << GICH_VMCR_ACK_CTL_SHIFT) &
+		GICH_VMCR_ACK_CTL_MASK;
+	vmcr |= (vmcrp->fiqen << GICH_VMCR_FIQ_EN_SHIFT) &
+		GICH_VMCR_FIQ_EN_MASK;
+	vmcr |= (vmcrp->cbpr << GICH_VMCR_CBPR_SHIFT) &
+		GICH_VMCR_CBPR_MASK;
+	vmcr |= (vmcrp->eoim << GICH_VMCR_EOI_MODE_SHIFT) &
+		GICH_VMCR_EOI_MODE_MASK;
 	vmcr |= (vmcrp->abpr << GICH_VMCR_ALIAS_BINPOINT_SHIFT) &
 		GICH_VMCR_ALIAS_BINPOINT_MASK;
 	vmcr |= (vmcrp->bpr << GICH_VMCR_BINPOINT_SHIFT) &
@@ -195,8 +236,19 @@ void vgic_v2_get_vmcr(struct kvm_vcpu *vcpu, struct vgic_vmcr *vmcrp)
 
 	vmcr = cpu_if->vgic_vmcr;
 
-	vmcrp->ctlr = (vmcr & GICH_VMCR_CTRL_MASK) >>
-			GICH_VMCR_CTRL_SHIFT;
+	vmcrp->grpen0 = (vmcr & GICH_VMCR_ENABLE_GRP0_MASK) >>
+		GICH_VMCR_ENABLE_GRP0_SHIFT;
+	vmcrp->grpen1 = (vmcr & GICH_VMCR_ENABLE_GRP1_MASK) >>
+		GICH_VMCR_ENABLE_GRP1_SHIFT;
+	vmcrp->ackctl = (vmcr & GICH_VMCR_ACK_CTL_MASK) >>
+		GICH_VMCR_ACK_CTL_SHIFT;
+	vmcrp->fiqen = (vmcr & GICH_VMCR_FIQ_EN_MASK) >>
+		GICH_VMCR_FIQ_EN_SHIFT;
+	vmcrp->cbpr = (vmcr & GICH_VMCR_CBPR_MASK) >>
+		GICH_VMCR_CBPR_SHIFT;
+	vmcrp->eoim = (vmcr & GICH_VMCR_EOI_MODE_MASK) >>
+		GICH_VMCR_EOI_MODE_SHIFT;
+
 	vmcrp->abpr = (vmcr & GICH_VMCR_ALIAS_BINPOINT_MASK) >>
 			GICH_VMCR_ALIAS_BINPOINT_SHIFT;
 	vmcrp->bpr  = (vmcr & GICH_VMCR_BINPOINT_MASK) >>

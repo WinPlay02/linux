@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2017, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -286,6 +286,11 @@
 
 #ifndef ACPI_INLINE
 #define ACPI_INLINE
+#endif
+
+/* Use ordered initialization if compiler doesn't support designated. */
+#ifndef ACPI_STRUCT_INIT
+#define ACPI_STRUCT_INIT(field, value)  value
 #endif
 
 /*

@@ -8,6 +8,7 @@
 #include <linux/export.h>
 #include <linux/init.h>
 #include <linux/jump_label.h>
+#include <linux/libfdt.h>
 #include <linux/memblock.h>
 #include <linux/printk.h>
 #include <linux/sched.h>
@@ -76,8 +77,6 @@ struct dt_cpu_feature {
  * Set up the base CPU
  */
 
-extern void __flush_tlb_power8(unsigned int action);
-extern void __flush_tlb_power9(unsigned int action);
 extern long __machine_check_early_realmode_p8(struct pt_regs *regs);
 extern long __machine_check_early_realmode_p9(struct pt_regs *regs);
 
@@ -90,39 +89,6 @@ static struct {
 } system_registers;
 
 static void (*init_pmu_registers)(void);
-
-static void cpufeatures_flush_tlb(void)
-{
-	unsigned long rb;
-	unsigned int i, num_sets;
-
-	/*
-	 * This is a temporary measure to keep equivalent TLB flush as the
-	 * cputable based setup code.
-	 */
-	switch (PVR_VER(mfspr(SPRN_PVR))) {
-	case PVR_POWER8:
-	case PVR_POWER8E:
-	case PVR_POWER8NVL:
-		num_sets = POWER8_TLB_SETS;
-		break;
-	case PVR_POWER9:
-		num_sets = POWER9_TLB_SETS_HASH;
-		break;
-	default:
-		num_sets = 1;
-		pr_err("unknown CPU version for boot TLB flush\n");
-		break;
-	}
-
-	asm volatile("ptesync" : : : "memory");
-	rb = TLBIEL_INVAL_SET;
-	for (i = 0; i < num_sets; i++) {
-		asm volatile("tlbiel %0" : : "r" (rb));
-		rb += 1 << TLBIEL_INVAL_SET_SHIFT;
-	}
-	asm volatile("ptesync" : : : "memory");
-}
 
 static void __restore_cpu_cpufeatures(void)
 {
@@ -148,8 +114,6 @@ static void __restore_cpu_cpufeatures(void)
 
 	if (init_pmu_registers)
 		init_pmu_registers();
-
-	cpufeatures_flush_tlb();
 }
 
 static char dt_cpu_name[64];
@@ -168,7 +132,6 @@ static struct cpu_spec __initdata base_cpu_spec = {
 	.oprofile_type		= PPC_OPROFILE_INVALID,
 	.cpu_setup		= NULL,
 	.cpu_restore		= __restore_cpu_cpufeatures,
-	.flush_tlb		= NULL,
 	.machine_check_early	= NULL,
 	.platform		= NULL,
 };
@@ -423,7 +386,6 @@ static void init_pmu_power8(void)
 static int __init feat_enable_mce_power8(struct dt_cpu_feature *f)
 {
 	cur_cpu_spec->platform = "power8";
-	cur_cpu_spec->flush_tlb = __flush_tlb_power8;
 	cur_cpu_spec->machine_check_early = __machine_check_early_realmode_p8;
 
 	return 1;
@@ -462,7 +424,6 @@ static void init_pmu_power9(void)
 static int __init feat_enable_mce_power9(struct dt_cpu_feature *f)
 {
 	cur_cpu_spec->platform = "power9";
-	cur_cpu_spec->flush_tlb = __flush_tlb_power9;
 	cur_cpu_spec->machine_check_early = __machine_check_early_realmode_p9;
 
 	return 1;
@@ -642,11 +603,10 @@ static struct dt_cpu_feature_match __initdata
 	{"processor-control-facility", feat_enable_dbell, CPU_FTR_DBELL},
 	{"processor-control-facility-v3", feat_enable_dbell, CPU_FTR_DBELL},
 	{"processor-utilization-of-resources-register", feat_enable_purr, 0},
-	{"subcore", feat_enable, CPU_FTR_SUBCORE},
 	{"no-execute", feat_enable, 0},
 	{"strong-access-ordering", feat_enable, CPU_FTR_SAO},
 	{"cache-inhibited-large-page", feat_enable_large_ci, 0},
-	{"coprocessor-icswx", feat_enable, CPU_FTR_ICSWX},
+	{"coprocessor-icswx", feat_enable, 0},
 	{"hypervisor-virtualization-interrupt", feat_enable_hvi, 0},
 	{"program-priority-register", feat_enable, CPU_FTR_HAS_PPR},
 	{"wait", feat_enable, 0},
@@ -671,12 +631,24 @@ static struct dt_cpu_feature_match __initdata
 	{"wait-v3", feat_enable, 0},
 };
 
-/* XXX: how to configure this? Default + boot time? */
-#ifdef CONFIG_PPC_CPUFEATURES_ENABLE_UNKNOWN
-#define CPU_FEATURE_ENABLE_UNKNOWN 1
-#else
-#define CPU_FEATURE_ENABLE_UNKNOWN 0
-#endif
+static bool __initdata using_dt_cpu_ftrs;
+static bool __initdata enable_unknown = true;
+
+static int __init dt_cpu_ftrs_parse(char *str)
+{
+	if (!str)
+		return 0;
+
+	if (!strcmp(str, "off"))
+		using_dt_cpu_ftrs = false;
+	else if (!strcmp(str, "known"))
+		enable_unknown = false;
+	else
+		return 1;
+
+	return 0;
+}
+early_param("dt_cpu_ftrs", dt_cpu_ftrs_parse);
 
 static void __init cpufeatures_setup_start(u32 isa)
 {
@@ -707,7 +679,7 @@ static bool __init cpufeatures_process_feature(struct dt_cpu_feature *f)
 		}
 	}
 
-	if (!known && CPU_FEATURE_ENABLE_UNKNOWN) {
+	if (!known && enable_unknown) {
 		if (!feat_try_enable_unknown(f)) {
 			pr_info("not enabling: %s (unknown and unsupported by kernel)\n",
 				f->name);
@@ -735,6 +707,8 @@ static __init void cpufeatures_cpu_quirks(void)
 	 */
 	if ((version & 0xffffff00) == 0x004e0100)
 		cur_cpu_spec->cpu_features |= CPU_FTR_POWER9_DD1;
+	else if ((version & 0xffffefff) == 0x004e0201)
+		cur_cpu_spec->cpu_features |= CPU_FTR_POWER9_DD2_1;
 }
 
 static void __init cpufeatures_setup_finished(void)
@@ -750,10 +724,28 @@ static void __init cpufeatures_setup_finished(void)
 	system_registers.hfscr = mfspr(SPRN_HFSCR);
 	system_registers.fscr = mfspr(SPRN_FSCR);
 
-	cpufeatures_flush_tlb();
-
 	pr_info("final cpu/mmu features = 0x%016lx 0x%08x\n",
 		cur_cpu_spec->cpu_features, cur_cpu_spec->mmu_features);
+}
+
+static int __init disabled_on_cmdline(void)
+{
+	unsigned long root, chosen;
+	const char *p;
+
+	root = of_get_flat_dt_root();
+	chosen = of_get_flat_dt_subnode_by_name(root, "chosen");
+	if (chosen == -FDT_ERR_NOTFOUND)
+		return false;
+
+	p = of_get_flat_dt_prop(chosen, "bootargs", NULL);
+	if (!p)
+		return false;
+
+	if (strstr(p, "dt_cpu_ftrs=off"))
+		return true;
+
+	return false;
 }
 
 static int __init fdt_find_cpu_features(unsigned long node, const char *uname,
@@ -766,8 +758,6 @@ static int __init fdt_find_cpu_features(unsigned long node, const char *uname,
 	return 0;
 }
 
-static bool __initdata using_dt_cpu_ftrs = false;
-
 bool __init dt_cpu_ftrs_in_use(void)
 {
 	return using_dt_cpu_ftrs;
@@ -775,11 +765,16 @@ bool __init dt_cpu_ftrs_in_use(void)
 
 bool __init dt_cpu_ftrs_init(void *fdt)
 {
+	using_dt_cpu_ftrs = false;
+
 	/* Setup and verify the FDT, if it fails we just bail */
 	if (!early_init_dt_verify(fdt))
 		return false;
 
 	if (!of_scan_flat_dt(fdt_find_cpu_features, NULL))
+		return false;
+
+	if (disabled_on_cmdline())
 		return false;
 
 	cpufeatures_setup_cpu();
@@ -1027,5 +1022,8 @@ static int __init dt_cpu_ftrs_scan_callback(unsigned long node, const char
 
 void __init dt_cpu_ftrs_scan(void)
 {
+	if (!using_dt_cpu_ftrs)
+		return;
+
 	of_scan_flat_dt(dt_cpu_ftrs_scan_callback, NULL);
 }

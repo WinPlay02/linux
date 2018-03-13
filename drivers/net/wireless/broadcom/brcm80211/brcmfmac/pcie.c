@@ -1251,13 +1251,13 @@ static int brcmf_pcie_init_scratchbuffers(struct brcmf_pciedev_info *devinfo)
 	u64 address;
 	u32 addr;
 
-	devinfo->shared.scratch = dma_alloc_coherent(&devinfo->pdev->dev,
-		BRCMF_DMA_D2H_SCRATCH_BUF_LEN,
-		&devinfo->shared.scratch_dmahandle, GFP_KERNEL);
+	devinfo->shared.scratch =
+		dma_zalloc_coherent(&devinfo->pdev->dev,
+					BRCMF_DMA_D2H_SCRATCH_BUF_LEN,
+					&devinfo->shared.scratch_dmahandle,
+					GFP_KERNEL);
 	if (!devinfo->shared.scratch)
 		goto fail;
-
-	memset(devinfo->shared.scratch, 0, BRCMF_DMA_D2H_SCRATCH_BUF_LEN);
 
 	addr = devinfo->shared.tcm_base_address +
 	       BRCMF_SHARED_DMA_SCRATCH_ADDR_OFFSET;
@@ -1268,13 +1268,13 @@ static int brcmf_pcie_init_scratchbuffers(struct brcmf_pciedev_info *devinfo)
 	       BRCMF_SHARED_DMA_SCRATCH_LEN_OFFSET;
 	brcmf_pcie_write_tcm32(devinfo, addr, BRCMF_DMA_D2H_SCRATCH_BUF_LEN);
 
-	devinfo->shared.ringupd = dma_alloc_coherent(&devinfo->pdev->dev,
-		BRCMF_DMA_D2H_RINGUPD_BUF_LEN,
-		&devinfo->shared.ringupd_dmahandle, GFP_KERNEL);
+	devinfo->shared.ringupd =
+		dma_zalloc_coherent(&devinfo->pdev->dev,
+					BRCMF_DMA_D2H_RINGUPD_BUF_LEN,
+					&devinfo->shared.ringupd_dmahandle,
+					GFP_KERNEL);
 	if (!devinfo->shared.ringupd)
 		goto fail;
-
-	memset(devinfo->shared.ringupd, 0, BRCMF_DMA_D2H_RINGUPD_BUF_LEN);
 
 	addr = devinfo->shared.tcm_base_address +
 	       BRCMF_SHARED_DMA_RINGUPD_ADDR_OFFSET;
@@ -1350,6 +1350,24 @@ static int brcmf_pcie_get_memdump(struct device *dev, void *data, size_t len)
 	return 0;
 }
 
+static int brcmf_pcie_get_fwname(struct device *dev, u32 chip, u32 chiprev,
+				 u8 *fw_name)
+{
+	struct brcmf_bus *bus_if = dev_get_drvdata(dev);
+	struct brcmf_pciedev *buspub = bus_if->bus_priv.pcie;
+	struct brcmf_pciedev_info *devinfo = buspub->devinfo;
+	int ret = 0;
+
+	if (devinfo->fw_name[0] != '\0')
+		strlcpy(fw_name, devinfo->fw_name, BRCMF_FW_NAME_LEN);
+	else
+		ret = brcmf_fw_map_chip_to_name(chip, chiprev,
+						brcmf_pcie_fwnames,
+						ARRAY_SIZE(brcmf_pcie_fwnames),
+						fw_name, NULL);
+
+	return ret;
+}
 
 static const struct brcmf_bus_ops brcmf_pcie_bus_ops = {
 	.txdata = brcmf_pcie_tx,
@@ -1359,6 +1377,7 @@ static const struct brcmf_bus_ops brcmf_pcie_bus_ops = {
 	.wowl_config = brcmf_pcie_wowl_config,
 	.get_ramsize = brcmf_pcie_get_ramsize,
 	.get_memdump = brcmf_pcie_get_memdump,
+	.get_fwname = brcmf_pcie_get_fwname,
 };
 
 
@@ -1650,16 +1669,23 @@ static const struct brcmf_buscore_ops brcmf_pcie_buscore_ops = {
 	.write32 = brcmf_pcie_buscore_write32,
 };
 
-static void brcmf_pcie_setup(struct device *dev, const struct firmware *fw,
+static void brcmf_pcie_setup(struct device *dev, int ret,
+			     const struct firmware *fw,
 			     void *nvram, u32 nvram_len)
 {
-	struct brcmf_bus *bus = dev_get_drvdata(dev);
-	struct brcmf_pciedev *pcie_bus_dev = bus->bus_priv.pcie;
-	struct brcmf_pciedev_info *devinfo = pcie_bus_dev->devinfo;
+	struct brcmf_bus *bus;
+	struct brcmf_pciedev *pcie_bus_dev;
+	struct brcmf_pciedev_info *devinfo;
 	struct brcmf_commonring **flowrings;
-	int ret;
 	u32 i;
 
+	/* check firmware loading result */
+	if (ret)
+		goto fail;
+
+	bus = dev_get_drvdata(dev);
+	pcie_bus_dev = bus->bus_priv.pcie;
+	devinfo = pcie_bus_dev->devinfo;
 	brcmf_pcie_attach(devinfo);
 
 	/* Some of the firmwares have the size of the memory of the device
@@ -1944,7 +1970,7 @@ static const struct dev_pm_ops brcmf_pciedrvr_pm = {
 	BRCM_PCIE_VENDOR_ID_BROADCOM, dev_id,\
 	subvend, subdev, PCI_CLASS_NETWORK_OTHER << 8, 0xffff00, 0 }
 
-static struct pci_device_id brcmf_pcie_devid_table[] = {
+static const struct pci_device_id brcmf_pcie_devid_table[] = {
 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4350_DEVICE_ID),
 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4356_DEVICE_ID),
 	BRCMF_PCIE_DEVICE(BRCM_PCIE_43567_DEVICE_ID),

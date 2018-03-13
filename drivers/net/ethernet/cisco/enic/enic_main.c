@@ -856,6 +856,7 @@ static netdev_tx_t enic_hard_start_xmit(struct sk_buff *skb,
 
 	if (vnic_wq_desc_avail(wq) < MAX_SKB_FRAGS + ENIC_DESC_MAX_SPLITS)
 		netif_tx_stop_queue(txq);
+	skb_tx_timestamp(skb);
 	if (!skb->xmit_more || netif_xmit_stopped(txq))
 		vnic_wq_doorbell(wq);
 
@@ -1499,7 +1500,7 @@ static int enic_poll(struct napi_struct *napi, int budget)
 	unsigned int cq_wq = enic_cq_wq(enic, 0);
 	unsigned int intr = enic_legacy_io_intr();
 	unsigned int rq_work_to_do = budget;
-	unsigned int wq_work_to_do = -1; /* no limit */
+	unsigned int wq_work_to_do = ENIC_WQ_NAPI_BUDGET;
 	unsigned int  work_done, rq_work_done = 0, wq_work_done;
 	int err;
 
@@ -1537,13 +1538,12 @@ static int enic_poll(struct napi_struct *napi, int budget)
 		 */
 		enic_calc_int_moderation(enic, &enic->rq[0]);
 
-	if (rq_work_done < rq_work_to_do) {
+	if ((rq_work_done < budget) && napi_complete_done(napi, rq_work_done)) {
 
 		/* Some work done, but not enough to stay in polling,
 		 * exit polling
 		 */
 
-		napi_complete_done(napi, rq_work_done);
 		if (enic->rx_coalesce_setting.use_adaptive_rx_coalesce)
 			enic_set_int_moderation(enic, &enic->rq[0]);
 		vnic_intr_unmask(&enic->intr[intr]);
@@ -1598,7 +1598,7 @@ static int enic_poll_msix_wq(struct napi_struct *napi, int budget)
 	struct vnic_wq *wq = &enic->wq[wq_index];
 	unsigned int cq;
 	unsigned int intr;
-	unsigned int wq_work_to_do = -1; /* clean all desc possible */
+	unsigned int wq_work_to_do = ENIC_WQ_NAPI_BUDGET;
 	unsigned int wq_work_done;
 	unsigned int wq_irq;
 
@@ -1663,13 +1663,12 @@ static int enic_poll_msix_rq(struct napi_struct *napi, int budget)
 		 */
 		enic_calc_int_moderation(enic, &enic->rq[rq]);
 
-	if (work_done < work_to_do) {
+	if ((work_done < budget) && napi_complete_done(napi, work_done)) {
 
 		/* Some work done, but not enough to stay in polling,
 		 * exit polling
 		 */
 
-		napi_complete_done(napi, work_done);
 		if (enic->rx_coalesce_setting.use_adaptive_rx_coalesce)
 			enic_set_int_moderation(enic, &enic->rq[rq]);
 		vnic_intr_unmask(&enic->intr[intr]);
@@ -1678,9 +1677,9 @@ static int enic_poll_msix_rq(struct napi_struct *napi, int budget)
 	return work_done;
 }
 
-static void enic_notify_timer(unsigned long data)
+static void enic_notify_timer(struct timer_list *t)
 {
-	struct enic *enic = (struct enic *)data;
+	struct enic *enic = from_timer(enic, t, notify_timer);
 
 	enic_notify_check(enic);
 
@@ -1739,7 +1738,7 @@ static int enic_request_intr(struct enic *enic)
 			intr = enic_msix_rq_intr(enic, i);
 			snprintf(enic->msix[intr].devname,
 				sizeof(enic->msix[intr].devname),
-				"%.11s-rx-%u", netdev->name, i);
+				"%s-rx-%u", netdev->name, i);
 			enic->msix[intr].isr = enic_isr_msix;
 			enic->msix[intr].devid = &enic->napi[i];
 		}
@@ -1750,7 +1749,7 @@ static int enic_request_intr(struct enic *enic)
 			intr = enic_msix_wq_intr(enic, i);
 			snprintf(enic->msix[intr].devname,
 				sizeof(enic->msix[intr].devname),
-				"%.11s-tx-%u", netdev->name, i);
+				"%s-tx-%u", netdev->name, i);
 			enic->msix[intr].isr = enic_isr_msix;
 			enic->msix[intr].devid = &enic->napi[wq];
 		}
@@ -1758,14 +1757,14 @@ static int enic_request_intr(struct enic *enic)
 		intr = enic_msix_err_intr(enic);
 		snprintf(enic->msix[intr].devname,
 			sizeof(enic->msix[intr].devname),
-			"%.11s-err", netdev->name);
+			"%s-err", netdev->name);
 		enic->msix[intr].isr = enic_isr_msix_err;
 		enic->msix[intr].devid = enic;
 
 		intr = enic_msix_notify_intr(enic);
 		snprintf(enic->msix[intr].devname,
 			sizeof(enic->msix[intr].devname),
-			"%.11s-notify", netdev->name);
+			"%s-notify", netdev->name);
 		enic->msix[intr].isr = enic_isr_msix_notify;
 		enic->msix[intr].devid = enic;
 
@@ -2848,9 +2847,7 @@ static int enic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	/* Setup notification timer, HW reset task, and wq locks
 	 */
 
-	init_timer(&enic->notify_timer);
-	enic->notify_timer.function = enic_notify_timer;
-	enic->notify_timer.data = (unsigned long)enic;
+	timer_setup(&enic->notify_timer, enic_notify_timer, 0);
 
 	enic_set_rx_coal_setting(enic);
 	INIT_WORK(&enic->reset, enic_reset);

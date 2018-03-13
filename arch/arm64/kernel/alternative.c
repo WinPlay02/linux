@@ -28,9 +28,11 @@
 #include <asm/sections.h>
 #include <linux/stop_machine.h>
 
-#define __ALT_PTR(a,f)		(u32 *)((void *)&(a)->f + (a)->f)
+#define __ALT_PTR(a,f)		((void *)&(a)->f + (a)->f)
 #define ALT_ORIG_PTR(a)		__ALT_PTR(a, orig_offset)
 #define ALT_REPL_PTR(a)		__ALT_PTR(a, alt_offset)
+
+int alternatives_applied;
 
 struct alt_region {
 	struct alt_instr *begin;
@@ -60,7 +62,7 @@ static bool branch_insn_requires_update(struct alt_instr *alt, unsigned long pc)
 
 #define align_down(x, a)	((unsigned long)(x) & ~(((unsigned long)(a)) - 1))
 
-static u32 get_alt_insn(struct alt_instr *alt, u32 *insnptr, u32 *altinsnptr)
+static u32 get_alt_insn(struct alt_instr *alt, __le32 *insnptr, __le32 *altinsnptr)
 {
 	u32 insn;
 
@@ -109,7 +111,7 @@ static void __apply_alternatives(void *alt_region, bool use_linear_alias)
 {
 	struct alt_instr *alt;
 	struct alt_region *region = alt_region;
-	u32 *origptr, *replptr, *updptr;
+	__le32 *origptr, *replptr, *updptr;
 
 	for (alt = region->begin; alt < region->end; alt++) {
 		u32 insn;
@@ -124,7 +126,7 @@ static void __apply_alternatives(void *alt_region, bool use_linear_alias)
 
 		origptr = ALT_ORIG_PTR(alt);
 		replptr = ALT_REPL_PTR(alt);
-		updptr = use_linear_alias ? (u32 *)lm_alias(origptr) : origptr;
+		updptr = use_linear_alias ? lm_alias(origptr) : origptr;
 		nr_inst = alt->alt_len / sizeof(insn);
 
 		for (i = 0; i < nr_inst; i++) {
@@ -143,7 +145,6 @@ static void __apply_alternatives(void *alt_region, bool use_linear_alias)
  */
 static int __apply_alternatives_multi_stop(void *unused)
 {
-	static int patched = 0;
 	struct alt_region region = {
 		.begin	= (struct alt_instr *)__alt_instructions,
 		.end	= (struct alt_instr *)__alt_instructions_end,
@@ -151,14 +152,14 @@ static int __apply_alternatives_multi_stop(void *unused)
 
 	/* We always have a CPU 0 at this point (__init) */
 	if (smp_processor_id()) {
-		while (!READ_ONCE(patched))
+		while (!READ_ONCE(alternatives_applied))
 			cpu_relax();
 		isb();
 	} else {
-		BUG_ON(patched);
+		BUG_ON(alternatives_applied);
 		__apply_alternatives(&region, true);
 		/* Barriers provided by the cache flushing */
-		WRITE_ONCE(patched, 1);
+		WRITE_ONCE(alternatives_applied, 1);
 	}
 
 	return 0;

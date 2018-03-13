@@ -61,7 +61,7 @@ MODULE_ALIAS_RTNL_LINK(DRV_NAME);
 /*
  * CAN test feature:
  * Enable the echo on driver level for testing the CAN core echo modes.
- * See Documentation/networking/can.txt for details.
+ * See Documentation/networking/can.rst for details.
  */
 
 static bool echo; /* echo testing. Default: 0 (Off) */
@@ -152,7 +152,7 @@ static const struct net_device_ops vcan_netdev_ops = {
 static void vcan_setup(struct net_device *dev)
 {
 	dev->type		= ARPHRD_CAN;
-	dev->mtu		= CAN_MTU;
+	dev->mtu		= CANFD_MTU;
 	dev->hard_header_len	= 0;
 	dev->addr_len		= 0;
 	dev->tx_queue_len	= 0;
@@ -163,7 +163,7 @@ static void vcan_setup(struct net_device *dev)
 		dev->flags |= IFF_ECHO;
 
 	dev->netdev_ops		= &vcan_netdev_ops;
-	dev->destructor		= free_netdev;
+	dev->needs_free_netdev	= true;
 }
 
 static struct rtnl_link_ops vcan_link_ops __read_mostly = {
